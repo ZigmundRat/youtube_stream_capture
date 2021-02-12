@@ -2,15 +2,43 @@
 
 import re
 import os
+
+# Yes, in that order.
+import colorama
+colorama.init()
+
 import sys
+
 import json
 import time
 import requests
 from datetime import datetime, timedelta
 
+import pathlib
+
 retries = 20
 tries = 0
 dash_tries = 0
+
+def print_error(message):
+	print(colorama.Fore.RED + f"[ERROR] {message}" + colorama.Style.RESET_ALL)
+
+def print_warning(message):
+	print(colorama.Fore.YELLOW + f"[WARNING] {message}" + colorama.Style.RESET_ALL)
+
+def print_info(message):
+	print(colorama.Fore.BLUE + f"[INFO] {message}" + colorama.Style.RESET_ALL)
+
+
+def parse_cookie_file(cookiefile):
+	cookies = {}
+	with open (cookiefile, 'r') as fp:
+		content = fp.read()
+		for line in content.split('\n'):
+			if 'youtube' in line:
+				elements = line.split('\t')
+				cookies[elements[5]] = elements[6]
+	return cookies
 
 audio_base_url = ""
 video_base_url = ""
@@ -22,15 +50,15 @@ video_lmt_number = 0
 audio_lmt_number = 0
 
 quality_video_ranking = [
-					402, 138, 					# 4320p: AV1 HFR | VP9 HFR | H.264
+					402, 138, 		# 4320p: AV1 HFR | VP9 HFR | H.264
 					401, 266,		# 2160p: AV1 HFR | VP9.2 HDR HFR | VP9 HFR | VP9 | H.264 
 					400, 264,		# 1440p: AV1 HFR | VP9.2 HDR HFR | VP9 HFR | VP9 | H.264
 					399, 299, 137,	# 1080p: AV1 HFR | VP9.2 HDR HFR | VP9 HFR | VP9 | H.264 HFR | H.264
 					398, 298, 136,	# 720p: AV1 HFR | VP9.2 HDR HFR | VP9 HFR | VP9 | H.264 HFR | H.264
-					397, 135,				# 480p: AV1 | VP9.2 HDR HFR | VP9 | H.264
-					396, 134,				# 360p: AV1 | VP9.2 HDR HFR | VP9 | H.264
-					395, 133, 			# 240p: AV1 | VP9.2 HDR HFR | VP9 | H.264
-					394, 160				# 144p: AV1 | VP9.2 HDR HFR | VP9 | H.264
+					397, 135,		# 480p: AV1 | VP9.2 HDR HFR | VP9 | H.264
+					396, 134,		# 360p: AV1 | VP9.2 HDR HFR | VP9 | H.264
+					395, 133, 		# 240p: AV1 | VP9.2 HDR HFR | VP9 | H.264
+					394, 160		# 144p: AV1 | VP9.2 HDR HFR | VP9 | H.264
 					]
 quality_audio_ranking = [140]
 
@@ -47,30 +75,83 @@ quality_audio_ranking = [140]
 # 					394, 330, 278, 160				# 144p: AV1 | VP9.2 HDR HFR | VP9 | H.264
 # 					]
 # quality_audio_ranking = [251,250,249,172,171,141,140,139]
-try:
-	segment_number = int(sys.argv[2])
-except:
-	segment_number = 0
+
+
+args = sys.argv
+segment_number = 0
+folder_suffix = ""
+output_directory = ""
+segment_folder_name = ""
+cookie_content = {}
+
+# Argument parsing
+for index, element in enumerate(args):
+	# Get video key
+	if '?v=' in element:
+		folder_suffix = element.split('?v=')[1]
+		if '&' in folder_suffix: 
+			folder_suffix = folder_suffix.split('&')[0]
+
+		segment_folder_name = f"segments_{folder_suffix}"
+
+	if '--start-segment' == element:
+		try:
+			segment_number = int(args[index + 1])
+		except:
+			print_warning("Failed to get segment number, setting it to 0!")
+			segment_number = 0
+
+	if '--output-directory' == element:
+		try:
+			output_directory = pathlib.Path(args[index + 1])
+			output_directory = output_directory.absolute()
+			if not output_directory.exists():
+				print_warning("Output directory does not exist, defaulting to the root directory of the script...")
+				output_directory = ""
+			else:
+				print_info(f"Set output directory to {output_directory}")
+		except Exception as e:
+			print(e)
+			print_warning("Output directory could not be set, defaulting to the root directory of the script...")
+			output_directory = ""
+
+	if '--cookie-file' == element:
+		try:
+			cookie_path = pathlib.Path(args[index + 1]).absolute()
+			if not cookie_path.exists():
+				print_error("Cookie file does not exist, defaulting to empty cookie...")
+				cookie_content = {}
+			else:
+				print_info(f"Found cookie at {cookie_path}")
+				cookie_content = parse_cookie_file(cookie_path)
+				if cookie_content == {}:
+					print_info("Empty cookie!")
+				else:
+					print_info(f"Cookie: {cookie_content}")
+
+		except:
+			print_error("Could not parse cookie, defaulting to empty cookie...")
+			cookie_content = {}
+
+if folder_suffix == "":
+	print_error("No stream link given! Exiting now...")
+	exit()
+
 
 startTime = datetime.now()
 
-folder_suffix = sys.argv[1].split('?v=')
-folder_suffix = folder_suffix[1]
-if not os.path.isdir('segments_{}'.format(folder_suffix)):
-	os.mkdir('segments_{}'.format(folder_suffix))
+# Create folder in root if no output path given
+if output_directory == "":
+	output_directory = pathlib.Path.cwd() / segment_folder_name
+	if not pathlib.Path.is_dir(output_directory):
+		pathlib.Path.mkdir(output_directory)
+		print_info(f"Created directory {output_directory}")
 
-class bcolors:
-    HEADER = '\033[35m' # Purple
-    OKBLUE = '\033[34m' # Dark Blue
-    OKGREEN = '\033[32m' # Dark Green
-    WARNING = '\033[33m' # Yellow
-    FAIL = '\033[31m' # Red
-    ENDC = '\033[0m' # Reset 
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-
-def print_error(message):
-	print(f"{bcolors.FAIL}[ERROR] {message}{bcolors.ENDC}")
+else:
+	output_directory = output_directory / segment_folder_name
+	if not pathlib.Path.is_dir(output_directory):
+		pathlib.Path.mkdir(output_directory)
+		print_info(f"Created directory {output_directory}")
 
 # Could I just have used an already existing mpeg-dash parser? Probably.
 # Did the one I could find have any documentation?
@@ -203,24 +284,26 @@ def get_new_segment(dash_content, itag, old_segment_number):
 		return "{}sq/{}/{}".format(video_base_url, old_segment_number, video_lmt_number - (video_lmt_distance * (old_segment_number)))
 
 def run_script():
+	global output_directory
 	global segment_number
 	global dash_tries
+	global cookie_content
 	req = requests.get(sys.argv[1])
 	headers = {
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.138 Safari/537.36',
-    'cookie': ''
+	'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.138 Safari/537.36'
 	}
 
-	req = requests.get(sys.argv[1], headers=headers)
+	req = requests.get(sys.argv[1], headers=headers, cookies=cookie_content)
 	print("Status code: {}".format(req.status_code))
 	if req.status_code == 429:
 		print_error("Too many requests. Please try again later (or get yourself another IP, I don't make the rules).")
 		print_error("You might also just need to get yourself a new cookie. I'm not YouTube, what do I know?")
 		return -1
+
 	content_page = req.text
-	content_page = content_page.split("var ytplayer = ytplayer || {};ytplayer.config = ")
+	content_page = content_page.split("ytInitialPlayerResponse = ")
 	content_page = content_page[1]
-	content_page = content_page.split(";ytplayer.web_player_context_config = ")
+	content_page = content_page.split(";var meta = document.")
 	content_page = content_page[0]
 
 	filename_thing = sys.argv[1].split('?v=')
@@ -230,7 +313,7 @@ def run_script():
 	except Exception as e:
 		print(e)
 
-	x = json.loads(j['args']['player_response'])
+	x = j
 
 	for el in x['responseContext']['serviceTrackingParams']:
 		for i in el['params']:
@@ -249,7 +332,6 @@ def run_script():
 			if x['streamingData']['adaptiveFormats'][i]['qualityLabel'] is not None:
 				quality_video_ids.append(x['streamingData']['adaptiveFormats'][i]['itag']) 
 		except:
-			print("Exception")
 			pass
 	
 	for i in range(len(x['streamingData']['adaptiveFormats'])):
@@ -257,7 +339,6 @@ def run_script():
 			if x['streamingData']['adaptiveFormats'][i]['audioQuality'] is not None:
 				quality_audio_ids.append(x['streamingData']['adaptiveFormats'][i]['itag']) 
 		except:
-			print("Exception")
 			pass
 
 	for i in quality_video_ranking:
@@ -277,7 +358,6 @@ def run_script():
 	r = requests.get(dash_url).text
 
 	dash_content = requests.get(dash_url).text
-	print(len(dash_content))
 	global tries
 	global retries
 	video_segment_list = []
@@ -293,7 +373,7 @@ def run_script():
 		try:
 
 			print("Segment number: {}".format(segment_number))
-			print("len(): {}".format(len(video_segment_list)))
+			print(f"Total number of segments: {len(video_segment_list)}")
 			if segment_number > (len(video_segment_list)):
 				dash_content = requests.get(dash_url).text
 				time.sleep(50)
@@ -307,9 +387,7 @@ def run_script():
 			segment_number = segment_number - 5
 			continue
 
-		print(segment_number)
-		print("Length: {}".format(len(video_segment_list)))
-		print(video_segment_list[segment_number])
+		print(f"URL: {video_segment_list[segment_number]}")
 		if segment_number < len(video_segment_list):
 			
 			while(True):
@@ -327,7 +405,7 @@ def run_script():
 					dash_tries += 1
 					time.sleep(4)
 
-			os.system("aria2c -c --auto-file-renaming=false --max-tries=100 --retry-wait=5 -j 3 -x 3 -s 3 -k 1M \"{}\" -o \"segments_{}/{}_{}_video.ts\"".format(video_segment_list[segment_number], filename_thing, segment_number, filename_thing))
+			os.system("aria2c -c --auto-file-renaming=false --max-tries=100 --retry-wait=5 -j 3 -x 3 -s 3 -k 1M \"{}\" -d \"{}\" -o \"{}\"".format(video_segment_list[segment_number], output_directory, f"{segment_number}_{filename_thing}_video.ts"))
 			while(True):
 				try:
 					r = session.head(audio_segment_list[segment_number])
@@ -337,9 +415,9 @@ def run_script():
 				except:
 					time.sleep(2)
 
-			os.system("aria2c -c --auto-file-renaming=false --max-tries=100 --retry-wait=5 -j 3 -x 3 -s 3 -k 1M \"{}\" -o \"segments_{}/{}_{}_audio.ts\"".format(audio_segment_list[segment_number], filename_thing, segment_number, filename_thing))
-			try:					
-				if os.path.getsize('segments_{}/{}_{}_video.ts'.format(filename_thing, segment_number,filename_thing)) < 2000 or os.path.getsize('segments_{}/{}_{}_audio.ts'.format(filename_thing,segment_number,filename_thing)) < 2000:
+			os.system("aria2c -c --auto-file-renaming=false --max-tries=100 --retry-wait=5 -j 3 -x 3 -s 3 -k 1M \"{}\" -d \"{}\" -o \"{}\"".format(audio_segment_list[segment_number], output_directory, f"{segment_number}_{filename_thing}_audio.ts"))
+			try:
+				if pathlib.Path(output_directory / f"{segment_number}_{filename_thing}_video.ts").stat().st_size < 2000 or pathlib.Path(output_directory / f"{segment_number}_{filename_thing}_audio.ts").stat().st_size < 2000:
 					segment_number -= 4
 					print("Trying again!")
 					continue
@@ -347,7 +425,6 @@ def run_script():
 					# It worked!
 					segment_number += 1
 					global startTime
-					print("Segment: {}".format(segment_number))
 					print("Time since last reset: {}".format(datetime.now() - startTime))
 			except:
 					segment_number -= 3
@@ -362,7 +439,7 @@ def run_script():
 
 		if segment_number >= len(video_segment_list):
 			print("Tries: {}".format(dash_tries))
-			time.sleep(1)
+			# time.sleep(1)
 			dash_content = requests.get(dash_url).text
 
 			video_segment_list.append(get_new_segment(dash_content, int(chosen_quality_video), segment_number))
